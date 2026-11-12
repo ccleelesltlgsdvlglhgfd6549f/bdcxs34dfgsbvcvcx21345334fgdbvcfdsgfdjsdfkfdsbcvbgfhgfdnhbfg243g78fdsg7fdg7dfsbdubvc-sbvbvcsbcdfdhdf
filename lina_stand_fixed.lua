@@ -406,12 +406,77 @@ local function setNoRender(state)
     end
 end
 
--- ===== 6 floating ".gg/standd" texts (NoRender screen while autofarm is off) =====
+-- ===== ".gg/standd" grid (NoRender screen while autofarm is off) =====
+-- Parallel grid that covers the whole screen. Every cell types the text in, holds it, erases it
+-- backwards and types it again, all in sync (no cursor line). One shared 30 Hz loop that only
+-- touches the labels when a letter actually changes, so it stays light even with many cells.
 local RB = {
-    TEXT = ".gg/standd", COUNT = 6, TEXT_SIZE = 26, W = 190, H = 34,
-    SATURATION = 0.55, COLOR_SPEED = 0.08,
-    items = {}, container = nil, started = false,
+    TEXT = ".gg/standd", TEXT_SIZE = 22, CELL_W = 150, CELL_H = 38, MAX_CELLS = 150,
+    SATURATION = 0.55, COLOR_SPEED = 0.05,
+    TYPE_DELAY = 0.09, ERASE_DELAY = 0.05, HOLD = 1.6, PAUSE = 0.5,
+    cells = {}, container = nil, started = false, viewKey = "", k = 0,
 }
+
+local function rbTextWidth()
+    local w = #RB.TEXT * RB.TEXT_SIZE * 0.6
+    pcall(function()
+        w = game:GetService("TextService"):GetTextSize(RB.TEXT, RB.TEXT_SIZE, Enum.Font.Code, Vector2.new(1000, 1000)).X
+    end)
+    return w
+end
+
+local function rbLayout()
+    local c = RB.container
+    if not c then return end
+    local view = c.AbsoluteSize
+    if view.X < 200 or view.Y < 200 then
+        local cam = workspace.CurrentCamera
+        if cam then view = cam.ViewportSize end
+    end
+    local key = math.floor(view.X) .. "x" .. math.floor(view.Y)
+    if key == RB.viewKey and #RB.cells > 0 then return end
+    RB.viewKey = key
+
+    for _, cell in ipairs(RB.cells) do pcall(function() cell.label:Destroy() end) end
+    RB.cells = {}
+
+    local w, h = RB.CELL_W, RB.CELL_H
+    local cols = math.max(math.floor(view.X / w), 1)
+    local rows = math.max(math.floor(view.Y / h), 1)
+    while cols * rows > RB.MAX_CELLS do
+        w, h = w * 1.15, h * 1.15
+        cols = math.max(math.floor(view.X / w), 1)
+        rows = math.max(math.floor(view.Y / h), 1)
+    end
+    local padX = (view.X - cols * w) / 2
+    local padY = (view.Y - rows * h) / 2
+    local textW = rbTextWidth()
+    local inX = (w - textW) / 2
+
+    for r = 0, rows - 1 do
+        for col = 0, cols - 1 do
+            local hue = (r + col) / (rows + cols)
+            local label = Instance.new("TextLabel")
+            label.Size = UDim2.fromOffset(textW + 6, h)
+            label.Position = UDim2.fromOffset(padX + col * w + inX, padY + r * h)
+            label.BackgroundTransparency = 1
+            label.Text = RB.TEXT
+            label.TextColor3 = Color3.fromHSV(hue, RB.SATURATION, 1)
+            label.TextSize = RB.TEXT_SIZE
+            label.Font = Enum.Font.Code
+            label.TextXAlignment = Enum.TextXAlignment.Left
+            label.TextYAlignment = Enum.TextYAlignment.Center
+            label.TextTransparency = 0.1
+            label.TextStrokeTransparency = 1
+            label.MaxVisibleGraphemes = RB.k
+            label.Active = false
+            label.Selectable = false
+            label.ZIndex = 11
+            label.Parent = c
+            RB.cells[#RB.cells + 1] = { label = label, hue = hue }
+        end
+    end
+end
 
 local function buildRainbow(gui)
     local container = Instance.new("Frame")
@@ -420,75 +485,60 @@ local function buildRainbow(gui)
     container.Active = false
     container.ZIndex = 11
     container.Parent = gui
-
-    local view = workspace.CurrentCamera.ViewportSize
-    local rng = Random.new()
-    RB.items = {}
-    for i = 1, RB.COUNT do
-        local label = Instance.new("TextLabel")
-        label.Size = UDim2.fromOffset(RB.W, RB.H)
-        label.BackgroundTransparency = 1
-        label.Text = RB.TEXT
-        label.TextColor3 = Color3.fromHSV((i - 1) / RB.COUNT, RB.SATURATION, 1)
-        label.TextSize = RB.TEXT_SIZE
-        label.Font = Enum.Font.Code
-        label.TextXAlignment = Enum.TextXAlignment.Left
-        label.TextTransparency = 0.1
-        label.TextStrokeTransparency = 1
-        label.Active = false
-        label.Selectable = false
-        label.ZIndex = 11
-        label.Parent = container
-
-        local ang = rng:NextNumber(0, math.pi * 2)
-        local speed = rng:NextNumber(55, 100)
-        local item = {
-            label = label,
-            pos = Vector2.new(rng:NextNumber(0, math.max(view.X - RB.W, 1)), rng:NextNumber(0, math.max(view.Y - RB.H, 1))),
-            vel = Vector2.new(math.cos(ang), math.sin(ang)) * speed,
-            hue = (i - 1) / RB.COUNT,
-        }
-        label.Position = UDim2.fromOffset(item.pos.X, item.pos.Y)
-        RB.items[i] = item
-    end
     RB.container = container
+    RB.cells = {}
+    RB.viewKey = ""
+    rbLayout()
     return container
+end
+
+local function rbSetVisible(k)
+    RB.k = k
+    for _, cell in ipairs(RB.cells) do cell.label.MaxVisibleGraphemes = k end
 end
 
 local function rbStart()
     if RB.started then return end
     RB.started = true
-    local t = 0
-    RunService.Heartbeat:Connect(function(dt)
-        if not alive() or not NR.On or NR.FarmOn or not RB.container then return end
-        dt = math.min(dt, 0.1)
-        t = t + dt
-        local view = RB.container.AbsoluteSize
-        if view.X < 200 or view.Y < 200 then
-            local cam = workspace.CurrentCamera
-            if cam then view = cam.ViewportSize end
-        end
-        local maxX, maxY = math.max(view.X - RB.W, 1), math.max(view.Y - RB.H, 1)
-        for _, it in ipairs(RB.items) do
-            local pos = it.pos + it.vel * dt
-            local vel = it.vel
-            if pos.X < 0 then
-                pos = Vector2.new(0, pos.Y)
-                vel = Vector2.new(math.abs(vel.X), vel.Y)
-            elseif pos.X > maxX then
-                pos = Vector2.new(maxX, pos.Y)
-                vel = Vector2.new(-math.abs(vel.X), vel.Y)
+    task.spawn(function()
+        local n = #RB.TEXT
+        local phase, nextAt, colorAt = "type", 0, 0
+        while alive() do
+            task.wait(0.03)
+            -- only works while the NoRender screen is on and autofarm is off;
+            -- when NoRender is turned off the container is hidden and 3D comes back
+            if NR.On and not NR.FarmOn and RB.container and RB.container.Parent then
+                rbLayout()
+                local now = tick()
+                if now >= nextAt then
+                    if phase == "type" then
+                        rbSetVisible(math.min(RB.k + 1, n))
+                        if RB.k >= n then
+                            phase, nextAt = "hold", now + RB.HOLD
+                        else
+                            nextAt = now + RB.TYPE_DELAY
+                        end
+                    elseif phase == "hold" then
+                        phase, nextAt = "erase", now
+                    elseif phase == "erase" then
+                        rbSetVisible(math.max(RB.k - 1, 0))
+                        if RB.k <= 0 then
+                            phase, nextAt = "pause", now + RB.PAUSE
+                        else
+                            nextAt = now + RB.ERASE_DELAY
+                        end
+                    else
+                        phase, nextAt = "type", now
+                    end
+                end
+                if now >= colorAt then
+                    colorAt = now + 0.25
+                    local shift = now * RB.COLOR_SPEED
+                    for _, cell in ipairs(RB.cells) do
+                        cell.label.TextColor3 = Color3.fromHSV((shift + cell.hue) % 1, RB.SATURATION, 1)
+                    end
+                end
             end
-            if pos.Y < 0 then
-                pos = Vector2.new(pos.X, 0)
-                vel = Vector2.new(vel.X, math.abs(vel.Y))
-            elseif pos.Y > maxY then
-                pos = Vector2.new(pos.X, maxY)
-                vel = Vector2.new(vel.X, -math.abs(vel.Y))
-            end
-            it.pos, it.vel = pos, vel
-            it.label.Position = UDim2.fromOffset(pos.X, pos.Y)
-            it.label.TextColor3 = Color3.fromHSV((t * RB.COLOR_SPEED + it.hue) % 1, RB.SATURATION, 1)
         end
     end)
 end
